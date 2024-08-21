@@ -9,7 +9,7 @@
 
 import pexpect
 import getpass
-from os import path
+from os import path, getcwd, chdir
 from os.path import abspath
 from re import findall, DOTALL, VERBOSE, escape, compile, MULTILINE
 import base64
@@ -51,10 +51,11 @@ class CSConnector:
 			self.cs_pass = getpass.getpass("Enter Cobalt Strike password: ")
 		else:
 			self.cs_pass = cs_pass
+
 		self.cs_port = cs_port
 		self.cs_directory = cs_directory
 		# NOTE: Leverage agscript to ensure jar unpacked, and client jar called correctly (v4.6 change)
-		self.aggscriptcmd = "'{}/agscript'".format(self.cs_directory)
+		self.aggscriptcmd = f'{self.cs_directory}/client/agscript'
 		# This gets populated once the connect function is run (in the future, maybe run that function in the initialization?)
 		self.cs_process = None
 
@@ -433,8 +434,9 @@ class CSConnector:
 		# creating a new object every so often or disconnecting and reconnecting.
 		# This issue needs to be troubleshot (troubleshooted?) in the future
 
-		if not path.exists("{}{}".format(self.cs_directory, "/cobaltstrike.jar")):
+		if not path.exists(f'{self.cs_directory}/cobaltstrike.jar'):
 			# Might want to exit rather than return. TBD.
+			print(f'self.cs_directory: {self.cs_directory,}')
 			raise Exception("Error: Cobalt Strike JAR file not found")
 
 		# prompt user for team server password
@@ -444,13 +446,20 @@ class CSConnector:
 										self.cs_port,
 										self.cs_user,
 										self.cs_pass)
+
+		# TODO: Fix path hopping
+		'''
+		cwd = getcwd()
+		chdir(f'{self.cs_directory}/client')
+		print(f'current working directory: {getcwd()}')
+		'''
 		#print(command)
 		# spawn agscript process
 		self.cs_process = pexpect.spawn("{} {} {} {} {}".format(self.aggscriptcmd,
 																			self.cs_host,
 																			self.cs_port,
 																			self.cs_user,
-																			self.cs_pass), cwd=self.cs_directory)
+																			self.cs_pass), cwd=f'{self.cs_directory}/client/')
 
 		# check if process is alive
 		if not self.cs_process.isalive():
