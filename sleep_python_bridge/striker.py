@@ -447,12 +447,6 @@ class CSConnector:
 										self.cs_user,
 										self.cs_pass)
 
-		# TODO: Fix path hopping
-		'''
-		cwd = getcwd()
-		chdir(f'{self.cs_directory}/client')
-		print(f'current working directory: {getcwd()}')
-		'''
 		#print(command)
 		# spawn agscript process
 		self.cs_process = pexpect.spawn("{} {} {} {} {}".format(self.aggscriptcmd,
