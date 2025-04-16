@@ -15,7 +15,7 @@ from re import findall, DOTALL, VERBOSE, escape, compile, MULTILINE
 import base64
 import sys
 from collections import defaultdict
-from sleep_python_bridge.sleepy import wrap_command, deserialize, convert_to_oneline
+from .sleepy import wrap_command, deserialize, convert_to_oneline
 from enum import Enum
 import asyncio
 
