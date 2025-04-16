@@ -9,17 +9,15 @@
 
 import pexpect
 import getpass
-from os import path, getcwd, chdir
+from os import path, getcwd, chdir, remove
 from os.path import abspath
 from re import findall, DOTALL, VERBOSE, escape, compile, MULTILINE
 import base64
-# I really need to do better with pexpect to avoid the hardcoded sleeps
-# This is a temp fix that will probably make it into production
-from time import sleep
 import sys
 from collections import defaultdict
 from sleep_python_bridge.sleepy import wrap_command, deserialize, convert_to_oneline
 from enum import Enum
+import asyncio
 
 
 class ArtifactType(Enum):
@@ -59,28 +57,7 @@ class CSConnector:
         # This gets populated once the connect function is run (in the future, maybe run that function in the initialization?)
         self.cs_process = None
 
-    def __enter__(self) -> 'CSConnector':
-        """The __enter__ method is invoked at the beginning of a 'with' statement.
-
-        Use this in the syntax of with CSConnecter(...) as cs:
-
-        Returns:
-            CSConnector: The newly constructed CSConnector obejct.
-        """
-        self.connectTeamserver()
-        return self
-
-    def __exit__(self, type, value, tb):
-        """The __exit__ method is invoked at the end of a 'with' block.
-
-        Use this in the syntax of with CSConnector(...) as cs:
-        """
-        self.disconnectTeamserver()
-
-        ##### Payload Generation #######
-        # This section is for functions that leverage Cobalt Strike's native as well as custom CNA scripts to generate various payloads
-
-    def generateMSBuild(
+    async def generateMSBuild(
             self,
             agscriptPath: str,
             listener: str,
@@ -98,7 +75,7 @@ class CSConnector:
             staged (bool, optional): Generate a staged or stageless payload. Defaults to False.
             x64 (bool, optional): Generate an x64 or x86 payload. Defaults to True.
         """
-        shellcode = self.generateShellcode(listener, staged=staged, x64=x64)
+        shellcode = await self.generateShellcode(listener, staged=staged, x64=x64)
         if shellcode:
             encoded = base64.b64encode(shellcode)
             if x64:
@@ -122,8 +99,8 @@ class CSConnector:
 
             with open(filename, 'wt') as write_file:
                 write_file.write(data)
-
-    def generateShellcode(self, listener: str, staged: bool = False, x64: bool = True) -> bytes:
+    
+    async def generateShellcode(self, listener: str, staged: bool = False, x64: bool = True) -> bytes:
         """Generates raw shellcode and returns it.
 
         Args:
@@ -134,9 +111,9 @@ class CSConnector:
         Returns:
             bytes: The raw shellcode bytes.
         """
-        return self.generatePayload(listener, ArtifactType.RAW, staged=staged, x64=x64)
-
-    def generatePayload(
+        return await self.generatePayload(listener, ArtifactType.RAW, staged=staged, x64=x64)
+    
+    async def generatePayload(
             self,
             listener: str,
             artifact_type: 'ArtifactType',
@@ -170,16 +147,16 @@ class CSConnector:
             else:
                 cmd = f"return base64_encode(artifact_payload('{listener}', '{artifact_type.value}', '{arch}'))"
 
-        encoded_bytes = self.ag_get_object(cmd, timeout=30000)
+        encoded_bytes = await self.ag_get_object(cmd, timeout=30000)
         # We converted the bytes to b64 for transferring, so now convert them back
         return base64.b64decode(encoded_bytes)
+    
+    ##### Payload/File Hosting ########
+    # This section is for functions for hosting and taking down files using Cobalt Strike's Sites functionality
 
-        ##### Payload/File Hosting ########
-        # This section is for functions for hosting and taking down files using Cobalt Strike's Sites functionality
+    # Returns the full URL as a string
 
-        # Returns the full URL as a string
-
-    def hostFile(
+    async def hostFile(
             self,
             file_path: str,
             site: str = None,
@@ -207,7 +184,7 @@ class CSConnector:
         # If no site is provided, we can grab the local IP, but we need to not wrap it in quotes
         if not site:
             # Could also use the normal sendline with 'x localip()'
-            site = self.get_local_ip()
+            site = await self.get_local_ip()
             if site:
                 # Wrap in double quotes to make it a Sleep string
                 site = f"\"{site}\""
@@ -217,7 +194,7 @@ class CSConnector:
             # Since we aren't wrapping in doublequotes in the command due to the possible usage of a function, we need to do it here
             site = "\"{}\"".format(site)
 
-        sites = self.get_sites()
+        sites = await self.get_sites()
         for a_site in sites:
             site_type = a_site.get('Type')
             if site_type == 'page':
@@ -225,7 +202,7 @@ class CSConnector:
                 if f"\"{site_host}\"" == site:
                     site_uri = a_site.get('URI')
                     if site_uri == uri:
-                        self.killHostedFile(port=port, uri=uri)
+                        await self.killHostedFile(port=port, uri=uri)
 
         if use_ssl:
             link = "https://{}:{}{}".format(site.strip('\"'), port, uri)
@@ -250,17 +227,17 @@ class CSConnector:
 		site_host({site}, {port}, "{uri}", $content, "{mime_type}", "{description}", {use_ssl});
 		"""
         # a sleep is necessary here so the headless client has enough time to upload the file
-        self.ag_sendline_multiline(multiline, sleep_time=sleep_time)
+        await self.ag_sendline_multiline(multiline, sleep_time=sleep_time)
         return link
-
-    def killHostedFile(self, port: int = 80, uri: str = '/hosted.txt'):
+    
+    async def killHostedFile(self, port: int = 80, uri: str = '/hosted.txt'):
         cmd = f'site_kill({port}, "{uri}")'
-        self.ag_sendline(cmd, sleep_time=1)
+        await self.ag_sendline(cmd, sleep_time=1)
 
-        ##### Log Item to Teamserver ######
-        # This section is for functions that allow you to write information to the teamserver which will show up in the activity log
-
-    def logToEventLog(self, string, event_type=None):
+    ##### Log Item to Teamserver ######
+    # This section is for functions that allow you to write information to the teamserver which will show up in the activity log
+    
+    async def logToEventLog(self, string, event_type=None):
         if event_type == "ioc":
             header = "Indicator of Compromise"
         elif event_type == "external":
@@ -269,9 +246,9 @@ class CSConnector:
             header = "Striker String Log"
 
         cmd = f'elog("{header}: {string}")'
-        self.ag_sendline(cmd, sleep_time=1)
+        await self.ag_sendline(cmd, sleep_time=1)
 
-    def logEmail(self,
+    async def logEmail(self,
                  email_to,
                  email_from,
                  email_sender_ip,
@@ -290,21 +267,21 @@ class CSConnector:
             for ioc_name in iocs.keys():
                 ioc_string = ioc_string + "- {}: {}\\n".format(ioc_name, iocs[ioc_name])
             elog_string = elog_string + ioc_string
-        self.ag_sendline('elog("{}")'.format(elog_string), sleep_time=1)
+        await self.ag_sendline('elog("{}")'.format(elog_string), sleep_time=1)
 
-    def taskBeacon(self, bid, string, attack_id=None):
+    async def taskBeacon(self, bid, string, attack_id=None):
         # AttackID is the MITRE ATT&CK Technique ID, if applicable
-        self.ag_sendline('btask({}, "{}", "{}")'.format(bid, string, attack_id), sleep_time=1)
+        await self.ag_sendline('btask({}, "{}", "{}")'.format(bid, string, attack_id), sleep_time=1)
 
-    def logToBeaconLog(self, bid, string):
+    async def logToBeaconLog(self, bid, string):
         cmd = f'blog({bid}, "{string}")'
-        self.ag_sendline(cmd, sleep_time=1)
+        await self.ag_sendline(cmd, sleep_time=1)
 
-    def logToBeaconLogAlt(self, bid, string):
+    async def logToBeaconLogAlt(self, bid, string):
         cmd = f'blog2({bid}, "{string}")'
-        self.ag_sendline(cmd, sleep_time=1)
+        await self.ag_sendline(cmd, sleep_time=1)
 
-    def getEmailLogs(self):
+    async def getEmailLogs(self):
         # e foreach $index => $entry (archives()) { if ( "Phishing email sent:*" iswm $entry["data"] ) { println("$entry['data']")}; }
         multiline = """
 		@email_logs = @();
@@ -315,9 +292,9 @@ class CSConnector:
 		}
 		return @email_logs;
 		"""
-        return self.ag_get_object_multiline(multiline)
+        return await self.ag_get_object_multiline(multiline)
 
-    def getEmailIoCs(self):
+    async def getEmailIoCs(self):
         # e foreach $index => $entry (archives()) { if ( "IoC:*" iswm $entry["data"] ) { println("$entry['data'] at " .dstamp($entry['when']))}; }
 
         # Should start with "Email Indicator of Compromise: [name] - [data]"?
@@ -330,9 +307,9 @@ class CSConnector:
 		}
 		return @email_iocs;
 		"""
-        return self.ag_get_object_multiline(multiline)
+        return await self.ag_get_object_multiline(multiline)
 
-    def getIoCs(self):
+    async def getIoCs(self):
         # e foreach $index => $entry (archives()) { if ( "IoC:*" iswm $entry["data"] ) { println("$entry['data'] at " .dstamp($entry['when']))}; }
         multiline = """
 		@iocs = @();
@@ -343,9 +320,9 @@ class CSConnector:
 		}
 		return @iocs;
 		"""
-        return self.ag_get_object_multiline(multiline)
+        return await self.ag_get_object_multiline(multiline)
 
-    def getExternalActions(self):
+    async def getExternalActions(self):
         multiline = """
 		@external_actions = @();
 		foreach $entry (archives()) {
@@ -355,9 +332,9 @@ class CSConnector:
 		}
 		return @external_actions;
 		"""
-        return self.ag_get_object_multiline(multiline)
+        return await self.ag_get_object_multiline(multiline)
 
-    def getStringLogs(self):
+    async def getStringLogs(self):
         multiline = """
 		@string_logs = @();
 		foreach $entry (archives()) {
@@ -367,185 +344,234 @@ class CSConnector:
 		}
 		return @string_logs;
 		"""
-        return self.ag_get_object_multiline(multiline)
+        return await self.ag_get_object_multiline(multiline)
 
         ##### Helper Functions #####
         # This section is for helper functions used throughout the rest of the script
         # such as grabbing useful information from the team server like the names of listeners running
 
-    def get_beaconlog(self) -> list:
+    async def get_beaconlog(self) -> list:
         command = 'return data_query("beaconlog")'
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def ag_ls_scripts(self) -> str:
-        return self.ag_get_string('', script_console_command='ls')
-
-    def ag_load_script(self, script_path):
-        self.ag_sendline(script_path, 'load')
-
-    def get_local_ip(self) -> str:
+    async def ag_ls_scripts(self) -> str:
+        return await self.ag_get_string('', script_console_command='ls')
+    
+    async def get_local_ip(self) -> str:
         command = "return localip()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_listener_info(self, name) -> list:
+    async def get_listener_info(self, name) -> list:
         command = f'return listener_info("{name}")'
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_listeners_local(self) -> list:
+    async def get_listeners_local(self) -> list:
         command = "return listeners_local()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_listeners_stageless(self) -> list:
+    async def get_listeners_stageless(self) -> list:
         command = "return listeners_stageless()"
-        return self.ag_get_object(command)
-
-    def get_beacons(self) -> list:
+        return await self.ag_get_object(command)
+    
+    async def get_beacons(self) -> list:
         command = "return beacons()"
-        return self.ag_get_object(command)
-
-    def get_users(self) -> list:
+        data = await self.ag_get_object(command)
+        result = {str(beacon['id']): {k: v for k, v in beacon.items() if k != 'id'} for beacon in data}
+        return result
+    
+    async def get_users(self) -> list:
         command = "return users()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_credentials(self) -> list:
+    async def get_credentials(self) -> list:
         command = "return credentials()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_hosts(self) -> list:
+    async def get_hosts(self) -> list:
         command = "return hosts()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_sites(self) -> list:
+    async def get_sites(self) -> list:
         command = "return sites()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_targets(self) -> list:
+    async def get_targets(self) -> list:
         command = "return targets()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def get_pivots(self) -> list:
+    async def get_pivots(self) -> list:
         command = "return pivots()"
-        return self.ag_get_object(command)
+        return await self.ag_get_object(command)
 
-    def connectTeamserver(self):
+    async def ag_load_script(self, script_path):
+        await self.ag_sendline(script_path, 'load')
+
+    async def ag_unload_script(self, script_path):
+        await self.ag_sendline(script_path, 'unload')
+
+    async def ag_reload_script(self, script_path):
+        await self.ag_sendline(script_path, 'reload')
+
+    async def beacon_run_ps(self, beacon_id: int, task_id:str) -> list:
+        """
+        $cmd = 'python3 "/home/impact/cobalt-manager-api/redis-helper.py" set "' . $task_id . '" "'. base64_encode($2) .'" 900';
+        $ret = exec( $cmd );
+        """
+        command = f"""
+        sub ps_cb {{
+            $handle = openf(">./tmp/".$task_id);
+            writeb($handle, $2);
+            closef($handle);
+	    }}
+        $task_id = '{task_id}';
+	    bps({beacon_id},lambda({{ ps_cb($1, $2, $3,$task_id); }}, \$task_id));
+        """
+                                       
+        data = await self.ag_get_object_multiline(command)
+        return task_id
+    
+    async def get_beacon_run_ps_result(self, task_id:str) -> list:
+        """Polls for beacon_run_ps result until available or timeout is reached."""
+        timeout=150
+        interval = 2
+        elapsed = 0
+        while elapsed < timeout:
+            result = await self.beacon_get_task_result(task_id)
+            if result:  # result is not None or empty
+                parsed_result = await self.parse_process_list(result)
+                return parsed_result
+            await asyncio.sleep(interval)
+            elapsed += interval
+        return None
+    
+    async def parse_process_list(self,raw_data):
+        result = []
+        for line in raw_data.strip().split('\n'):
+            parts = line.split('\t')
+            entry = {
+                "Image": parts[0],
+                "ParentPID": parts[1] if len(parts) > 1 else "",
+                "PID": parts[2] if len(parts) > 2 else "",
+            }
+            if len(parts) > 3:
+                entry["Arch"] = parts[3]
+            if len(parts) > 4:
+                entry["User"] = parts[4]
+            if len(parts) > 5:
+                entry["Session"] = parts[5]
+            result.append(entry)
+        return result
+
+    async def beacon_get_task_result(self, task_id:str):
+        command = f"""
+        $file_name = "./tmp/{task_id}";
+        if (-exists $file_name)
+        {{
+            $handle = openf($file_name);
+            $data = readb($handle, -1);
+	        closef($handle);
+            deleteFile($file_name);
+            return $data;
+        }}
+        return $null    
+        """                             
+        result = await self.ag_get_object_multiline(command)
+        return result     
+
+    async def connectTeamserver(self):
         """Connect to CS team server"""
 
         # In my testing, I found that there were issues sending too many
         # messages to event log over one connection ( => ~7), so I recommend
         # creating a new object every so often or disconnecting and reconnecting.
-        # This issue needs to be troubleshot (troubleshooted?) in the future
+        # This issue needs to be troubleshooted (troubleshooted?) in the future
 
         if not path.exists(f'{self.cs_directory}/cobaltstrike.jar'):
-            # Might want to exit rather than return. TBD.
-            print(f'self.cs_directory: {self.cs_directory,}')
+            print(f'self.cs_directory: {self.cs_directory}')
             raise Exception("Error: Cobalt Strike JAR file not found")
 
         # prompt user for team server password
-        #
         command = "{} {} {} {} {}".format(self.aggscriptcmd,
                                           self.cs_host,
                                           self.cs_port,
                                           self.cs_user,
                                           self.cs_pass)
 
-        # print(command)
-        # spawn agscript process
-        self.cs_process = pexpect.spawn("{} {} {} {} {}".format(self.aggscriptcmd,
-                                                                self.cs_host,
-                                                                self.cs_port,
-                                                                self.cs_user,
-                                                                self.cs_pass), cwd=f'{self.cs_directory}/client/')
+        # Spawn agscript process
+        self.cs_process = await asyncio.to_thread(pexpect.spawn, command, cwd=f'{self.cs_directory}/client/')
 
-        # check if process is alive
+        # Check if process is alive
         if not self.cs_process.isalive():
             raise Exception("Error connecting to CS team server! Check config and try again.")
 
         # Expect the aggressor prompt which means we initialized correctly
         try:
-            self.cs_process.expect(r'\x1b\[4maggressor\x1b\[0m>', timeout=5)
-            self.send_ready_command()
+            await asyncio.to_thread(self.cs_process.expect, r'\x1b\[4maggressor\x1b\[0m>', timeout=5)
+            await self.send_ready_command()
         except (pexpect.exceptions.TIMEOUT, pexpect.exceptions.EOF):
-            print(self.cs_process.before.decode())
             raise Exception("EOF encountered") from None
 
-        # self.poutput("Connecting...")
-
-        # upon successful connection, display status
-        # self.do_status('')
-
-    def send_ready_command(self):
+    async def send_ready_command(self):
         # We want to wait for the server to be fully synchronized, so we use Cobalt Strike's "on ready {}" event handler
         cmd = 'on ready { println("Successfully" . " connected to teamserver!"); }'
         expect = '.*Successfully connected to teamserver!.*'
-        self.ag_get_string(cmd, expect=expect)
+        return await self.ag_get_string(cmd, expect=expect)
 
-    def disconnectTeamserver(self):
+    async def disconnectTeamserver(self):
         """Disconnect from CS team server"""
-
-        # close the agscript process
+        # Close the agscript process
         if self.cs_process:
-            self.cs_process.close()
+            await asyncio.to_thread(self.cs_process.close)  # This runs close in a separate thread
+            print("Disconnected from CS team server.")
         else:
             print("CS was already disconnected! Hopefully you already knew this.")
 
-        # clear config vars
-        # self.socks_port = ''
-        # self.beacon_pid = ''
-        # self.bid = ''
-        # self.socks_port_connected = False
-
-    def ag_sendline(self, cmd, script_console_command='e', sleep_time: int = 0):
-        if '' == cmd:
-            full_cmd = "{}".format(script_console_command)
-        else:
-            full_cmd = "{} {}".format(script_console_command, cmd)
-        # print(full_cmd)
+    async def ag_sendline(self, cmd, script_console_command='e', sleep_time: int = 0):
+        full_cmd = f"{script_console_command} {cmd}" if cmd else f"{script_console_command}"
         self.cs_process.sendline(full_cmd)
-        sleep(sleep_time)
+        await asyncio.sleep(sleep_time)
         return full_cmd
 
-    def ag_sendline_multiline(self, multiline: str, script_console_command: str = 'e', sleep_time: int = 0):
+    async def ag_sendline_multiline(self, multiline: str, script_console_command: str = 'e', sleep_time: int = 0):
         oneline = convert_to_oneline(multiline)
-        return self.ag_sendline(oneline, script_console_command=script_console_command, sleep_time=sleep_time)
+        return await self.ag_sendline(oneline, script_console_command=script_console_command, sleep_time=sleep_time)
 
-    def ag_get_string_multiline(self, multiline: str, script_console_command: str = 'e',
-                                expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>', timeout: int = -1,
-                                sleep_time: int = 0) -> str:
+    async def ag_get_string_multiline(self, multiline: str, script_console_command: str = 'e',
+                                      expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>',
+                                      timeout: int = -1, sleep_time: int = 0) -> str:
         oneline = convert_to_oneline(multiline)
-        return self.ag_get_string(oneline, script_console_command=script_console_command, expect=expect,
-                                  timeout=timeout, sleep_time=sleep_time)
+        return await self.ag_get_string(oneline, script_console_command=script_console_command,
+                                        expect=expect, timeout=timeout, sleep_time=sleep_time)
 
-    def ag_get_string(self, cmd: str, script_console_command: str = 'e',
+    async def ag_get_string(self, cmd: str, script_console_command: str = 'e',
                       expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>', timeout: int = -1, sleep_time: int = 0) -> str:
-        full_cmd = self.ag_sendline(cmd, script_console_command=script_console_command, sleep_time=sleep_time)
+        full_cmd = await self.ag_sendline(cmd, script_console_command=script_console_command, sleep_time=sleep_time)
 
-        self.cs_process.expect(escape(full_cmd), timeout=timeout)
-        self.cs_process.expect(expect, timeout=timeout)
+        await asyncio.to_thread(self.cs_process.expect, escape(full_cmd), timeout=timeout)
+        await asyncio.to_thread(self.cs_process.expect, expect, timeout=timeout)
 
-        before = self.cs_process.before.decode()
+        before = await asyncio.to_thread(self.cs_process.before.decode)
         return before
-
-    def ag_get_object_multiline(self, multiline: str, script_console_command: str = 'e',
-                                expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>', timeout: int = -1,
-                                sleep_time: int = 0):
+    
+    async def ag_get_object_multiline(self, multiline: str, script_console_command: str = 'e',
+                                      expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>',
+                                      timeout: int = -1, sleep_time: int = 0):
         oneline = convert_to_oneline(multiline)
-        return self.ag_get_object(oneline, script_console_command=script_console_command, expect=expect,
-                                  timeout=timeout, sleep_time=sleep_time)
+        return await self.ag_get_object(oneline, script_console_command=script_console_command,
+                                        expect=expect, timeout=timeout, sleep_time=sleep_time)
 
-    def ag_get_object(self, cmd: str, script_console_command: str = 'e',
-                      expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>', timeout: int = -1, sleep_time: int = 0) -> str:
+    async def ag_get_object(self, cmd: str, script_console_command: str = 'e',
+                            expect: str = r'\r\n\x1b\[4maggressor\x1b\[0m>', timeout: int = -1,
+                            sleep_time: int = 0) -> str:
         wrapped = wrap_command(cmd)
-        match = self.ag_get_string(wrapped, script_console_command=script_console_command, expect=expect,
-                                   timeout=timeout, sleep_time=sleep_time)
+        match = await self.ag_get_string(wrapped, script_console_command=script_console_command,
+                                         expect=expect, timeout=timeout, sleep_time=sleep_time)
         base64_regex = r"^(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=|[A-Za-z0-9+\/]{4})$"
         parse = findall(base64_regex, match, MULTILINE)
         if parse:
             return deserialize(parse[0])
         else:
             raise Exception(f"Base64 regex found no match on {match[:50]}") from None
-
-        # Returns a dict with the server IP/hostname as key and
-        # the values being a dict with keys for user, password, port
 
     def parse_aggressor_properties(self, aggprop=None):
         connections = defaultdict(dict)
@@ -591,43 +617,3 @@ class CSConnector:
 
 
 ### End CSConnector Class ###
-
-
-##### Main ########
-
-def parseArguments():
-    parser = ArgumentParser()
-
-    parser.add_argument("-t", "--teamserver", help="the hostname or IP address of the teamserver", required=True)
-    parser.add_argument("-u", "--user", help="the user to connect to the teamserver as (_striker will be added)",
-                        default=environ.get('USER'))
-    # TODO: Make this requirement optional and if not provided, secure prompt for password
-    parser.add_argument("-p", "--password",
-                        help="the password for the teamserver, if not provided, you will be prompted", default=None)
-    parser.add_argument("-P", "--port", help="the port for the teamserver, default is 50050", default=50050)
-    parser.add_argument("-j", "--javadir", help="the path to the directory containing the Cobalt Strike JAR file",
-                        default="./")
-
-    args = parser.parse_args()
-    return args
-
-
-def main():
-    args = parseArguments()
-
-    with CSConnector(
-            args.teamserver,
-            cs_user=args.user,
-            cs_pass=args.password,
-            cs_directory=args.javadir,
-            cs_port=args.port
-    ) as cs:
-        pass
-
-
-if __name__ == '__main__':
-    # There are some imports which aren't used when this is a library, so they are imported here instead
-    from argparse import ArgumentParser
-    from os import environ
-
-    main()
