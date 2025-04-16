@@ -5,6 +5,8 @@ from argparse import ArgumentParser
 from pprint import pp, pprint
 from pathlib import Path
 import json
+import asyncio
+import os
 
 ####################
 ## Variables
@@ -28,7 +30,17 @@ def parseArguments():
     args = parser.parse_args()
     return args
 
-def main(args):
+def convert_java_to_python(obj):
+    if isinstance(obj, dict):
+        return {convert_java_to_python(k): convert_java_to_python(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_java_to_python(item) for item in obj]
+    elif hasattr(obj, '__int__') and type(obj).__name__ == 'JavaInt':
+        return int(obj)
+    else:
+        return obj
+
+async def main(args):
 
     cs_host = args.host
     cs_port = args.port
@@ -39,18 +51,17 @@ def main(args):
     ####################
     ## Connect to server
     print(f"[*] Connecting to teamserver: {cs_host}")
-    with CSConnector(
+    async with CSConnector(
         cs_host=cs_host, 
         cs_port=cs_port, 
         cs_user=cs_user, 
         cs_pass=cs_pass,
         cs_directory=cs_directory) as cs:
 
-        beacons = cs.get_beacons()
+        beacons = await cs.get_beacons()
 
         print("[*] Getting beacon logs from teamserver...")
         beaconsresult = beacons
-
     ####################
     ## Process Logs
 
@@ -129,12 +140,14 @@ def main(args):
     pprint(beaconsresult)
     pprint(links)
 
-    output = json.dumps({"nodes":beacons,"links":links},ensure_ascii=False).encode('utf8')
+    output = json.dumps({"nodes":convert_java_to_python(beaconsresult),"links":convert_java_to_python(links)},ensure_ascii=False).encode('utf-8')
     #print(output)
-
-    with open('output/html/data/beacons.json', 'wb') as the_file:
+    script_dir = Path(__file__).resolve().parent
+    datapath = script_dir / "output" / "html" / "data"
+    os.makedirs(datapath, exist_ok=True)
+    with open(f'{str(datapath)}/beacons.json', 'wb') as the_file:
         the_file.write(output)
 
 if __name__ == "__main__":
     args = parseArguments()
-    main(args)
+    asyncio.run(main(args))

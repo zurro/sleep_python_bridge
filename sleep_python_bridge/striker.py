@@ -57,6 +57,28 @@ class CSConnector:
         # This gets populated once the connect function is run (in the future, maybe run that function in the initialization?)
         self.cs_process = None
 
+    async def __aenter__(self) -> 'CSConnector':
+        """The __enter__ method is invoked at the beginning of a 'with' statement.
+
+        Use this in the syntax of with CSConnecter(...) as cs:
+
+        Returns:
+            CSConnector: The newly constructed CSConnector obejct.
+        """
+        await self.connectTeamserver()
+        return self
+
+    async def __aexit__(self, type, value, tb):
+        """The __exit__ method is invoked at the end of a 'with' block.
+
+        Use this in the syntax of with CSConnector(...) as cs:
+        """
+        await self.disconnectTeamserver()
+
+        ##### Payload Generation #######
+        # This section is for functions that leverage Cobalt Strike's native as well as custom CNA scripts to generate various payloads
+
+
     async def generateMSBuild(
             self,
             agscriptPath: str,
@@ -375,9 +397,7 @@ class CSConnector:
     
     async def get_beacons(self) -> list:
         command = "return beacons()"
-        data = await self.ag_get_object(command)
-        result = {str(beacon['id']): {k: v for k, v in beacon.items() if k != 'id'} for beacon in data}
-        return result
+        return await self.ag_get_object(command)
     
     async def get_users(self) -> list:
         command = "return users()"
@@ -617,3 +637,42 @@ class CSConnector:
 
 
 ### End CSConnector Class ###
+
+##### Main ########
+
+def parseArguments():
+    parser = ArgumentParser()
+
+    parser.add_argument("-t", "--teamserver", help="the hostname or IP address of the teamserver", required=True)
+    parser.add_argument("-u", "--user", help="the user to connect to the teamserver as (_striker will be added)",
+                        default=environ.get('USER'))
+    # TODO: Make this requirement optional and if not provided, secure prompt for password
+    parser.add_argument("-p", "--password",
+                        help="the password for the teamserver, if not provided, you will be prompted", default=None)
+    parser.add_argument("-P", "--port", help="the port for the teamserver, default is 50050", default=50050)
+    parser.add_argument("-j", "--javadir", help="the path to the directory containing the Cobalt Strike JAR file",
+                        default="./")
+
+    args = parser.parse_args()
+    return args
+
+
+async def main():
+    args = parseArguments()
+
+    async with CSConnector(
+            args.teamserver,
+            cs_user=args.user,
+            cs_pass=args.password,
+            cs_directory=args.javadir,
+            cs_port=args.port
+    ) as cs:
+        pass
+
+
+if __name__ == '__main__':
+    # There are some imports which aren't used when this is a library, so they are imported here instead
+    from argparse import ArgumentParser
+    from os import environ
+
+    asyncio.run(main())

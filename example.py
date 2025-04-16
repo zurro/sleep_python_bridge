@@ -4,6 +4,7 @@
 from sleep_python_bridge.striker import CSConnector
 from argparse import ArgumentParser
 from pprint import pp, pprint
+import asyncio
 
 ###################
 ## Argparse
@@ -19,7 +20,7 @@ def parseArguments():
     return args
 
 ## Let's go
-def main(args):
+async def main(args):
 
     cs_host = args.host
     cs_port = args.port
@@ -29,7 +30,7 @@ def main(args):
 
     ## Connect to server
     print(f"[*] Connecting to teamserver: {cs_host}")
-    with CSConnector(
+    async with CSConnector(
         cs_host=cs_host, 
         cs_port=cs_port, 
         cs_user=cs_user, 
@@ -39,15 +40,15 @@ def main(args):
         # Perform some actions
         # 
         # Get beacon metadata - i.e., x beacons() from the script console
-        beacons = cs.get_beacons()
+        beacons = await cs.get_beacons()
         print("BEACONS")
         pprint(beacons)
 
         # Get list of listners - i.e., x listeners_stageless() from the script console
-        listeners = cs.get_listeners_stageless()
+        listeners = await cs.get_listeners_stageless()
         print("LISTENERS")
         pprint(listeners)
 
 if __name__ == "__main__":
     args = parseArguments()
-    main(args)
+    asyncio.run(main(args))

